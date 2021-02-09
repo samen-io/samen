@@ -1,30 +1,23 @@
-export { add } from "./calc"
+import { rpc, SamenMiddleware } from "@samen/samen"
 
-export interface Sjaak {
+const myMiddleware: SamenMiddleware<
+  { authorization: string },
+  {},
+  undefined
+> = async (req, ctx, next) => {
+  console.log("hallo? >> " + req.headers.authorization)
+  await next()
+}
+
+export interface Test {
   x: boolean
-  y: number
+}
+async function isTestFunc(test: Test): Promise<boolean> {
+  return test.x === true
 }
 
-export async function isSjaak(sjaak: Sjaak): Promise<boolean> {
-  return sjaak.x === true
-}
-
-export interface Aad {
-  x: boolean
-}
-
-export async function isAad(aad: Aad): Promise<boolean> {
-  return aad.x === true
-}
-
-export async function x(): Promise<void> {}
-
-export interface Y {
-  answer: [number, number]
-}
-
-export async function answer(y: Y): Promise<void> {}
-
-export type Z = [Aad, Y]
-
-export async function test(z: Z): Promise<void> {}
+export const isTest = rpc(isTestFunc, {
+  middleware: [myMiddleware],
+  memory: 1024,
+  timeout: 3000,
+})
