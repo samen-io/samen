@@ -23,6 +23,13 @@ import {
   PropertyMissingError,
   UnsupportedTypeError,
 } from "../errors"
+import { RPCConfig } from "../rpc"
+
+interface RPCDeclaration {
+  rpc: FunctionDeclaration
+  middleware: FunctionDeclaration[]
+  config: RPCConfig
+}
 
 export default function generateManifest(
   samenSourceFile: SourceFile,
@@ -47,15 +54,12 @@ export default function generateManifest(
   }
 }
 
-type NamespaceFunctionMap = Map<string[], FunctionDeclaration[]>
+type NamespaceFunctionMap = Map<string[], RPCDeclaration[]>
 
 function getFunctionsPerNamespace(
   samenSourceFile: SourceFile,
 ): NamespaceFunctionMap {
-  const result: NamespaceFunctionMap = new Map<
-    string[],
-    FunctionDeclaration[]
-  >()
+  const result: NamespaceFunctionMap = new Map<string[], RPCDeclaration[]>()
 
   result.set([], reduceFuncs(samenSourceFile.getExportSymbols()))
 
@@ -85,36 +89,47 @@ function getFunctionsPerNamespace(
 
   return result
 
-  function reduceFuncs(symbols: Symbol[]): FunctionDeclaration[] {
-    return symbols.reduce(
-      (result: FunctionDeclaration[], exportSymbol: Symbol) => {
-        const symbol = exportSymbol.isAlias()
-          ? exportSymbol.getAliasedSymbolOrThrow()
-          : exportSymbol
+  function reduceFuncs(symbols: Symbol[]): RPCDeclaration[] {
+    return symbols.reduce((result: RPCDeclaration[], exportSymbol: Symbol) => {
+      const symbol = exportSymbol.isAlias()
+        ? exportSymbol.getAliasedSymbolOrThrow()
+        : exportSymbol
 
-        const valueDeclr = symbol.getValueDeclaration()
+      const valueDeclr = symbol.getValueDeclaration()
+      console.log(valueDeclr)
 
-        if (valueDeclr === undefined) {
-          return result
-        }
-
-        if (Node.isFunctionDeclaration(valueDeclr)) {
-          return [...result, valueDeclr]
-        }
-        if (Node.isVariableDeclaration(valueDeclr)) {
-          const exportedVariable = valueDeclr
-            .getInitializer()
-            ?.getType()
-            ?.getSymbol()
-            ?.getValueDeclaration()
-          if (Node.isFunctionDeclaration(exportedVariable)) {
-            return [...result, exportedVariable]
-          }
-        }
+      if (valueDeclr === undefined) {
         return result
-      },
-      [] as FunctionDeclaration[],
-    )
+      }
+
+      if (Node.isFunctionDeclaration(valueDeclr)) {
+        console.log("------- IS FUNCTION")
+        return [...result, makeRPCDeclaration(valueDeclr)]
+      }
+      if (Node.isVariableDeclaration(valueDeclr)) {
+        console.log("------- IS VARIABLE")
+        const exportedVariable = valueDeclr
+          .getInitializer()
+          ?.getType()
+          ?.getSymbol()
+          ?.getValueDeclaration()
+        if (Node.isFunctionDeclaration(exportedVariable)) {
+          return [...result, makeRPCDeclaration(exportedVariable)]
+        }
+      }
+      return result
+    }, [] as RPCDeclaration[])
+
+    function makeRPCDeclaration(func: FunctionDeclaration): RPCDeclaration {
+      return {
+        rpc: func,
+        middleware: [],
+        config: {
+          memory: 1024,
+          timeout: 10 * 1000,
+        },
+      }
+    }
   }
 }
 
@@ -122,9 +137,9 @@ function compileRPCs(
   typeChecker: TypeChecker,
   manifest: SamenManifest,
   namespace: string[],
-  functionDeclarations: FunctionDeclaration[],
+  functionDeclarations: RPCDeclaration[],
 ) {
-  for (const functionDeclaration of functionDeclarations) {
+  for (const { rpc: functionDeclaration } of functionDeclarations) {
     const returnType = functionDeclaration.getReturnType()
     const isReturnTypePromise = returnType.getSymbol()?.getName() === "Promise"
     const useReturnType = isReturnTypePromise

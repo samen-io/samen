@@ -1,6 +1,7 @@
 {
   "name": "@samen/samen",
   "version": "0.7.5",
+  "main": "dist/index.js",
   "bin": {
     "samen": "dist/cli.js"
   },
