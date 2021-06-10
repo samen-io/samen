@@ -47,15 +47,19 @@ export default function generateManifest(
   }
 }
 
-type NamespaceFunctionMap = Map<string[], FunctionDeclaration[]>
+type NamespaceFunctionMap = Map<string[], Callable[]>
+
+export interface Callable {
+  name: string
+  returnType: Type<ts.Type>
+  parameters: ParameterDeclaration[]
+  location: Node<ts.Node>
+}
 
 function getFunctionsPerNamespace(
   samenSourceFile: SourceFile,
 ): NamespaceFunctionMap {
-  const result: NamespaceFunctionMap = new Map<
-    string[],
-    FunctionDeclaration[]
-  >()
+  const result: NamespaceFunctionMap = new Map<string[], Callable[]>()
 
   result.set([], reduceFuncs(samenSourceFile.getExportSymbols()))
 
@@ -85,36 +89,84 @@ function getFunctionsPerNamespace(
 
   return result
 
-  function reduceFuncs(symbols: Symbol[]): FunctionDeclaration[] {
-    return symbols.reduce(
-      (result: FunctionDeclaration[], exportSymbol: Symbol) => {
-        const symbol = exportSymbol.isAlias()
-          ? exportSymbol.getAliasedSymbolOrThrow()
-          : exportSymbol
+  function reduceFuncs(symbols: Symbol[]): Callable[] {
+    return symbols.reduce((result: Callable[], exportSymbol: Symbol) => {
+      const symbol = exportSymbol.isAlias()
+        ? exportSymbol.getAliasedSymbolOrThrow()
+        : exportSymbol
 
-        const valueDeclr = symbol.getValueDeclaration()
+      const valueDeclr = symbol.getValueDeclaration()
 
-        if (valueDeclr === undefined) {
-          return result
+      if (valueDeclr === undefined) {
+        return result
+      }
+
+      if (Node.isFunctionDeclaration(valueDeclr)) {
+        const name = valueDeclr.getName()
+        if (name === undefined) {
+          throw new Error("Function should have name")
         }
+        return [
+          ...result,
+          {
+            name,
+            returnType: valueDeclr.getReturnType(),
+            parameters: valueDeclr.getParameters(),
+            location: valueDeclr,
+          },
+        ]
+      }
+      if (Node.isVariableDeclaration(valueDeclr)) {
+        const initializer = valueDeclr.getInitializer()
+        const exportedVariable = initializer
+          ?.getType()
+          ?.getSymbol()
+          ?.getValueDeclaration()
+        if (Node.isFunctionDeclaration(exportedVariable)) {
+          const name = exportedVariable.getName()
+          if (name === undefined) {
+            throw new Error("Function should have name")
+          }
+          return [
+            ...result,
+            {
+              name,
+              returnType: exportedVariable.getReturnType(),
+              parameters: exportedVariable.getParameters(),
+              location: exportedVariable,
+            },
+          ]
+        } else if (Node.isArrowFunction(exportedVariable)) {
+          return [
+            ...result,
+            {
+              name: symbol.getName(),
+              returnType: exportedVariable.getReturnType(),
+              parameters: exportedVariable.getParameters(),
+              location: exportedVariable,
+            },
+          ]
+        } else if (Node.isCallExpression(initializer)) {
+          const calledFunctionName = initializer
+            .getChildrenOfKind(ts.SyntaxKind.Identifier)?.[0]
+            ?.getText()
+          const wrappedFunc = initializer.getArguments()[0]?.getSymbol()
 
-        if (Node.isFunctionDeclaration(valueDeclr)) {
-          return [...result, valueDeclr]
-        }
-        if (Node.isVariableDeclaration(valueDeclr)) {
-          const exportedVariable = valueDeclr
-            .getInitializer()
-            ?.getType()
-            ?.getSymbol()
-            ?.getValueDeclaration()
-          if (Node.isFunctionDeclaration(exportedVariable)) {
-            return [...result, exportedVariable]
+          if (calledFunctionName === "createRPCFunction" && wrappedFunc) {
+            const actualCallable = reduceFuncs([wrappedFunc])[0]
+            // TODO: parse de config erbij!
+            return [
+              ...result,
+              {
+                ...actualCallable,
+                name: symbol.getName(),
+              },
+            ]
           }
         }
-        return result
-      },
-      [] as FunctionDeclaration[],
-    )
+      }
+      return result
+    }, [] as Callable[])
   }
 }
 
@@ -122,17 +174,17 @@ function compileRPCs(
   typeChecker: TypeChecker,
   manifest: SamenManifest,
   namespace: string[],
-  functionDeclarations: FunctionDeclaration[],
+  callables: Callable[],
 ) {
-  for (const functionDeclaration of functionDeclarations) {
-    const returnType = functionDeclaration.getReturnType()
+  for (const callable of callables) {
+    const returnType = callable.returnType
     const isReturnTypePromise = returnType.getSymbol()?.getName() === "Promise"
     const useReturnType = isReturnTypePromise
       ? returnType.getTypeArguments()[0]
       : returnType
 
     const modelIds: string[] = []
-    const newModels = extractModels(functionDeclaration, manifest.models)
+    const newModels = extractModels(callable, manifest.models)
 
     for (const model of Object.values(newModels)) {
       if (manifest.models[model.id] === undefined) {
@@ -141,7 +193,7 @@ function compileRPCs(
       modelIds.push(model.id)
     }
 
-    const name = functionDeclaration.getName()
+    const name = callable.name
 
     if (!name) {
       throw new Error("Function has no name")
@@ -149,16 +201,14 @@ function compileRPCs(
 
     const rpcFunction: RPCFunction = {
       name,
-      parameters: functionDeclaration
-        .getParameters()
-        .map((param, index) =>
-          compileParameterDeclaration(param, index, typeChecker, manifest.refs),
-        ),
+      parameters: callable.parameters.map((param, index) =>
+        compileParameterDeclaration(param, index, typeChecker, manifest.refs),
+      ),
       returnType: getJSValue(
         useReturnType,
         typeChecker,
         manifest.refs,
-        functionDeclaration,
+        callable.location,
       ),
       modelIds,
       namespace,
@@ -408,11 +458,8 @@ function mergeUnionTypes(jsValues: JSValue[]): JSValue[] {
   return oneOfTypes
 }
 
-function extractModels(func: FunctionDeclaration, models: ModelMap): ModelMap {
-  return loop([
-    ...func.getParameters().map((p) => p.getType()),
-    func.getReturnType(),
-  ])
+function extractModels(func: Callable, models: ModelMap): ModelMap {
+  return loop([...func.parameters.map((p) => p.getType()), func.returnType])
 
   function loop(todos: Type[], done: Type[] = []): ModelMap {
     if (todos.length === 0) {

@@ -1,21 +1,11 @@
-import { Project } from "ts-morph"
-import generateManifest from "./generateManifest"
 import { JSType } from "../domain/JSValue"
-import { RPCFunction, SamenManifest } from "../domain/manifest"
-
-function getCompiledSamenFile(tsContent: string): SamenManifest {
-  const project = new Project()
-  const samenFile = project.createSourceFile("samen.ts", tsContent)
-  const r = generateManifest(samenFile, project.getTypeChecker())
-  return r
-}
+import { RPCFunction } from "../domain/manifest"
+import { getCompiledSamenFile } from "../tests/utils"
 
 function getCompiledSamenFunction(tsContent: string): RPCFunction {
-  const project = new Project()
-  const samenFile = project.createSourceFile("samen.ts", tsContent)
-  const r = generateManifest(samenFile, project.getTypeChecker())
-  expect(r.rpcFunctions).toHaveLength(1)
-  return r.rpcFunctions[0]
+  const manifest = getCompiledSamenFile(tsContent)
+  expect(manifest.rpcFunctions).toHaveLength(1)
+  return manifest.rpcFunctions[0]
 }
 
 describe("compile SamenFile", () => {
