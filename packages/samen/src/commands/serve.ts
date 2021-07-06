@@ -11,21 +11,26 @@ import {
   readManifestFile,
 } from "@samen/core"
 import build from "./build"
-import buildClients from "./buildClients"
 
 const PORT = parseInt(process.env.PORT || "") || 4000
 
-interface Route {
+interface RPCRoute {
   definition: RPCFunction
   importedFunction: any // TODO
   argumentNames: string[]
 }
-type Routes = Record<string, Route>
-let routes: Routes = {}
+type RPCRoutes = Record<string, RPCRoute>
+let rpcRoutes: RPCRoutes = {}
 let environment: Environment
+let manifest: SamenManifest
+let manifestPath: string
 
-export default async function serve(_environment: Environment) {
+export default async function serve(
+  _environment: Environment,
+  _manifestPath: string,
+) {
   environment = _environment
+  manifestPath = _manifestPath
 
   const server = http.createServer()
   server.on("request", requestListener())
@@ -45,8 +50,7 @@ export default async function serve(_environment: Environment) {
 
 async function reload(): Promise<void> {
   try {
-    await build(environment)
-    await buildClients(environment)
+    await build(environment, manifestPath)
     await loadRoutes()
     startSpinner("").succeed(`Samen is served at http://localhost:${PORT}`)
   } catch (error) {
@@ -64,13 +68,13 @@ function clearRequireCache() {
 
 async function loadRoutes(): Promise<void> {
   const spinner = startSpinner("Updating routes")
-  const manifest = await readManifestFile()
   clearRequireCache()
-  routes = getRoutes(manifest)
+  manifest = await readManifestFile(manifestPath)
+  rpcRoutes = getRPCRoutes(manifest)
   spinner.succeed("Loaded routes")
 }
 
-function getRoutes(manifest: SamenManifest): Routes {
+function getRPCRoutes(manifest: SamenManifest): RPCRoutes {
   return manifest.rpcFunctions.reduce((routes, rpcFunction) => {
     const makeRpcPath = (joinWith = ".") =>
       rpcFunction.namespace.length
@@ -92,7 +96,7 @@ function getRoutes(manifest: SamenManifest): Routes {
           .map((r) => r.name),
       },
     }
-  }, {} as Routes)
+  }, {} as RPCRoutes)
 }
 
 function requestListener() {
@@ -108,11 +112,27 @@ function requestListener() {
       return
     }
 
+    if (req.method === "GET") {
+      if (req.url === "/manifest.json") {
+        if (environment === Environment.development) {
+          res.setHeader("Content-Type", "application/json")
+          res.statusCode = 200
+          res.write(JSON.stringify(manifest))
+          res.end()
+          return
+        } else {
+          res.statusCode = 404
+          res.end()
+          return
+        }
+      }
+    }
+
     if (req.method === "POST") {
       res.setHeader("Content-Type", "application/json")
 
       if (req.url) {
-        const route = routes[req.url]
+        const route = rpcRoutes[req.url]
         if (route) {
           try {
             const { headers } = req

@@ -1,62 +1,137 @@
-import { JSType, RPCFunction, SamenManifest } from "../../domain"
-import functionSignature from "./shared/functionSignature"
-import { untypedParameters } from "./shared/parameters"
-import { promise, type } from "./shared/types"
+import {
+  ClientEnvironment,
+  JSType,
+  RPCFunction,
+  SamenManifest,
+} from "../../domain"
+import arrowFunctionSignature from "./shared/arrowFunctionSignature"
 import {
   generateDateConverter,
   generateRefDateConverters,
 } from "./shared/dateConverter"
+import functionSignature from "./shared/functionSignature"
+import { untypedParameters } from "./shared/parameters"
+import { promise, type } from "./shared/types"
 
 interface Props {
   manifest: SamenManifest
-  apiUrl: string
-  isEnvNode: boolean
+  environment: ClientEnvironment
 }
 
-const clientSDK = ({ apiUrl, manifest, isEnvNode }: Props): string => `
-    ${setAuthorizationHeaderFunction()}
-
-    ${requestFunction({ apiUrl, isEnvNode })}
-
-    ${Object.values(manifest.models)
-      .map((model) => wrapWithNamespace(model.namespace, model.ts))
-      .join("\n")}
-
-    ${generateRefDateConverters(manifest)}
-
-    ${manifest.rpcFunctions.map((rpc) => rpcFunction(rpc, manifest)).join("\n")}
-  `
-
-const setAuthorizationHeaderFunction = () => `
-  let authorizationHeader: string | undefined = undefined
-  export function setAuthorizationHeader(header: string) {
-    authorizationHeader = header;
+const clientSDK = ({ manifest, environment }: Props) => `
+  const _fetch = ${
+    environment === ClientEnvironment.Node ? `require('node-fetch')` : `fetch`
   }
-  export function unsetAuthorizationHeader() {
-    authorizationHeader = undefined
+
+  export class SamenClient {
+    private url: string
+
+    public constructor(apiUrl: string) {
+      this.url = apiUrl
+    }
+
+    ${authHeaderFunctions()}
+
+    ${requestFunctions()}
+
+    ${rpcFunctions(manifest)}
   }
-  function getAuthorizationHeader(): { 'Authorization': string } | {} {
-    return authorizationHeader ? { 'Authorization': authorizationHeader } : {}
+
+  ${Object.values(manifest.models)
+    .map((model) => wrapWithNamespace(model.namespace, model.ts))
+    .join("\n")}
+
+  ${generateRefDateConverters(manifest)}
+`
+
+type Code = {
+  rpcs?: RPCFunction[]
+  namespaces?: {
+    [name: string]: Code
+  }
+}
+
+function rpcFunctions(manifest: SamenManifest): string {
+  const result: Code = {}
+
+  manifest.rpcFunctions.forEach((rpc) => {
+    setRpcInNamespace(result, rpc.namespace, rpc)
+  })
+
+  function setRpcInNamespace(
+    code: Code,
+    namespace: string[],
+    rpc: RPCFunction,
+  ) {
+    if (namespace.length === 0) {
+      code.rpcs = [...(code.rpcs ?? []), rpc]
+    } else {
+      const [curr, ...rest] = namespace
+
+      if (!code.namespaces) {
+        code.namespaces = {}
+      }
+
+      if (!code.namespaces[curr]) {
+        code.namespaces[curr] = {}
+      }
+
+      setRpcInNamespace(code.namespaces[curr], rest, rpc)
+    }
+  }
+
+  function render(code: Code, isRoot = false): string {
+    const namespaceEntries = Object.entries(code.namespaces ?? {})
+    const ts: string[] = [
+      ...(code.rpcs ?? []).map((rpc) => rpcFunction(rpc, manifest, !isRoot)),
+    ]
+
+    if (isRoot) {
+      for (const [namespace, namespaceCode] of namespaceEntries) {
+        ts.push(
+          [`${namespace} = {`, render(namespaceCode, false), `}`].join("\n"),
+        )
+      }
+      return ts.join("\n")
+    } else {
+      for (const [namespace, namespaceCode] of namespaceEntries) {
+        ts.push(
+          [`${namespace}: {`, render(namespaceCode, false), `}`].join("\n"),
+        )
+      }
+      return ts.join(",\n")
+    }
+  }
+
+  return render(result, true)
+}
+
+const authHeaderFunctions = () => `
+  private authorizationHeader: string | undefined = undefined
+
+  public setAuthorizationHeader(header: string) {
+    this.authorizationHeader = header
+  }
+
+  public unsetAuthorizationHeader() {
+    this.authorizationHeader = undefined
+  }
+
+  private getAuthorizationHeader(): { Authorization: string } | {} {
+    return this.authorizationHeader
+      ? { Authorization: this.authorizationHeader }
+      : {}
   }
 `
 
-const requestFunction = ({
-  apiUrl,
-  isEnvNode,
-}: {
-  apiUrl: string
-  isEnvNode: boolean
-}) => `
-  const _fetch = ${isEnvNode ? `require('node-fetch')` : `fetch`}
-  const ENDPOINT = "${apiUrl}"
-
-  async function request<T>(name: string, body: object): Promise<T> {
+const requestFunctions = () => `
+  private async request<T>(name: string, body: object): Promise<T> {
     try {
-      const result = await _fetch(ENDPOINT + name, {
+      const result = await _fetch(this.url + name, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...getAuthorizationHeader(),
+          ...this.getAuthorizationHeader(),
         },
         body: JSON.stringify(body),
       })
@@ -71,13 +146,13 @@ const requestFunction = ({
     }
   }
 
-  async function requestVoid(name: string, body: object): Promise<void> {
+  private async requestVoid(name: string, body: object): Promise<void> {
     try {
-      const result = await _fetch(ENDPOINT + name, {
+      const result = await _fetch(this.url + name, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...getAuthorizationHeader(),
+          ...this.getAuthorizationHeader(),
         },
         body: JSON.stringify(body),
       })
@@ -102,16 +177,26 @@ function wrapWithNamespace(namespace: string[], tsCode: string) {
   return tsCode
 }
 
-const rpcFunction = (rpcFn: RPCFunction, manifest: SamenManifest): string => {
+const rpcFunction = (
+  rpcFn: RPCFunction,
+  manifest: SamenManifest,
+  isInNamespace: boolean,
+): string => {
   const { name, parameters: _parameters, returnType, namespace } = rpcFn
   // filter out idToken parameter
   const parameters = _parameters.filter((p) => p.name !== "idToken")
-  const signature = functionSignature({
-    name,
-    parameters,
-    returnType: promise(returnType, manifest),
-    manifest,
-  })
+  const signature = isInNamespace
+    ? arrowFunctionSignature({
+        parameters,
+        returnType: promise(returnType, manifest),
+        manifest,
+      })
+    : functionSignature({
+        name,
+        parameters,
+        returnType: promise(returnType, manifest),
+        manifest,
+      })
   const body = `{${untypedParameters({ parameters, manifest })}}`
 
   const requestPath = `/${
@@ -125,14 +210,16 @@ const rpcFunction = (rpcFn: RPCFunction, manifest: SamenManifest): string => {
     "rpcResult",
   )
 
-  return wrapWithNamespace(
-    namespace,
-    `
-    export async function ${signature} {
+  return `
+    ${
+      isInNamespace
+        ? `${name}: async ${signature} => {`
+        : `public async ${signature} {`
+    }
       ${
         isEmptyResult
-          ? `await requestVoid("${requestPath}", ${body})`
-          : `const rpcResult = await request<${type(
+          ? `await this.requestVoid("${requestPath}", ${body})`
+          : `const rpcResult = await this.request<${type(
               returnType,
               manifest,
             )}>("${requestPath}", ${body});
@@ -140,8 +227,7 @@ const rpcFunction = (rpcFn: RPCFunction, manifest: SamenManifest): string => {
             return rpcResult;`
       }
     }
-    `,
-  )
+  `
 }
 
 export default clientSDK
