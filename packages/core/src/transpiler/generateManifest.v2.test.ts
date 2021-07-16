@@ -49,8 +49,12 @@ describe("generate manifest v2", () => {
 
     console.log(
       "func",
-      getCompiledSamenFile(`
-      export const test = createRPCFunction(theRealTestFunc)
+      JSON.stringify(
+        getCompiledSamenFile(`
+      export const test = createRPCFunction(theRealTestFunc, {
+        memory: 111,
+        timeout: 345,
+      })
 
       function theRealTestFunc(a: number): number {
         return 1
@@ -59,6 +63,9 @@ describe("generate manifest v2", () => {
       function createRPCFunction(func: Function, config?: any) {
       }
     `),
+        null,
+        4,
+      ),
     )
     // expect(func).toBeDefined()
     // expect(func).toHaveProperty("name", "test")

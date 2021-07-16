@@ -31,6 +31,10 @@ interface RPCDeclaration {
   config: RPCConfig
 }
 
+function wrapEmpty(rpc: Callable): RPCDeclaration {
+  return { rpc, middleware: [], config: {} }
+}
+
 export default function generateManifest(
   samenSourceFile: SourceFile,
   typeChecker: TypeChecker,
@@ -54,7 +58,7 @@ export default function generateManifest(
   }
 }
 
-type NamespaceFunctionMap = Map<string[], Callable[]>
+type NamespaceFunctionMap = Map<string[], RPCDeclaration[]>
 
 export interface Callable {
   name: string
@@ -66,7 +70,7 @@ export interface Callable {
 function getFunctionsPerNamespace(
   samenSourceFile: SourceFile,
 ): NamespaceFunctionMap {
-  const result: NamespaceFunctionMap = new Map<string[], Callable[]>()
+  const result: NamespaceFunctionMap = new Map<string[], RPCDeclaration[]>()
 
   result.set([], reduceFuncs(samenSourceFile.getExportSymbols()))
 
@@ -96,8 +100,8 @@ function getFunctionsPerNamespace(
 
   return result
 
-  function reduceFuncs(symbols: Symbol[]): Callable[] {
-    return symbols.reduce((result: Callable[], exportSymbol: Symbol) => {
+  function reduceFuncs(symbols: Symbol[]): RPCDeclaration[] {
+    return symbols.reduce((result: RPCDeclaration[], exportSymbol: Symbol) => {
       const symbol = exportSymbol.isAlias()
         ? exportSymbol.getAliasedSymbolOrThrow()
         : exportSymbol
@@ -115,14 +119,15 @@ function getFunctionsPerNamespace(
         }
         return [
           ...result,
-          {
+          wrapEmpty({
             name,
             returnType: valueDeclr.getReturnType(),
             parameters: valueDeclr.getParameters(),
             location: valueDeclr,
-          },
+          }),
         ]
       }
+
       if (Node.isVariableDeclaration(valueDeclr)) {
         const initializer = valueDeclr.getInitializer()
         const exportedVariable = initializer
@@ -136,44 +141,69 @@ function getFunctionsPerNamespace(
           }
           return [
             ...result,
-            {
+            wrapEmpty({
               name,
               returnType: exportedVariable.getReturnType(),
               parameters: exportedVariable.getParameters(),
               location: exportedVariable,
-            },
+            }),
           ]
         } else if (Node.isArrowFunction(exportedVariable)) {
           return [
             ...result,
-            {
+            wrapEmpty({
               name: symbol.getName(),
               returnType: exportedVariable.getReturnType(),
               parameters: exportedVariable.getParameters(),
               location: exportedVariable,
-            },
+            }),
           ]
         } else if (Node.isCallExpression(initializer)) {
           const calledFunctionName = initializer
             .getChildrenOfKind(ts.SyntaxKind.Identifier)?.[0]
             ?.getText()
           const wrappedFunc = initializer.getArguments()[0]?.getSymbol()
+          const funcConfig = initializer.getArguments()[1]?.getSymbol()
 
           if (calledFunctionName === "createRPCFunction" && wrappedFunc) {
-            const actualCallable = reduceFuncs([wrappedFunc])[0]
-            // TODO: parse de config erbij!
+            const { rpc } = reduceFuncs([wrappedFunc])[0]
+
+            const memoryStr = funcConfig
+              ?.getMember("memory")
+              ?.getValueDeclaration()
+              ?.getChildrenOfKind(ts.SyntaxKind.NumericLiteral)[0]
+              .getText()
+
+            const configMemory: number | undefined = memoryStr
+              ? Number.parseInt(memoryStr)
+              : undefined
+
+            const timeoutStr = funcConfig
+              ?.getMember("timeout")
+              ?.getValueDeclaration()
+              ?.getChildrenOfKind(ts.SyntaxKind.NumericLiteral)[0]
+              .getText()
+
+            const configTimeout: number | undefined = timeoutStr
+              ? Number.parseInt(timeoutStr)
+              : undefined
+
             return [
               ...result,
               {
-                ...actualCallable,
-                name: symbol.getName(),
+                rpc,
+                middleware: [],
+                config: {
+                  memory: configMemory,
+                  timeout: configTimeout,
+                },
               },
             ]
           }
         }
       }
       return result
-    }, [] as Callable[])
+    }, [] as RPCDeclaration[])
   }
 }
 
@@ -181,17 +211,22 @@ function compileRPCs(
   typeChecker: TypeChecker,
   manifest: SamenManifest,
   namespace: string[],
-  callables: Callable[],
+  rpcDeclarations: RPCDeclaration[],
 ) {
-  for (const callable of callables) {
-    const returnType = callable.returnType
+  for (const { rpc, config } of rpcDeclarations) {
+    const { name, parameters, returnType, location } = rpc
+
+    if (!name) {
+      throw new Error("Function has no name")
+    }
+
     const isReturnTypePromise = returnType.getSymbol()?.getName() === "Promise"
     const useReturnType = isReturnTypePromise
       ? returnType.getTypeArguments()[0]
       : returnType
 
     const modelIds: string[] = []
-    const newModels = extractModels(callable, manifest.models)
+    const newModels = extractModels(rpc, manifest.models)
 
     for (const model of Object.values(newModels)) {
       if (manifest.models[model.id] === undefined) {
@@ -200,32 +235,30 @@ function compileRPCs(
       modelIds.push(model.id)
     }
 
-    const name = callable.name
-
-    if (!name) {
-      throw new Error("Function has no name")
-    }
-
     const rpcFunction: RPCFunction = {
       name,
-      parameters: callable.parameters.map((param, index) =>
+      parameters: parameters.map((param, index) =>
         compileParameterDeclaration(param, index, typeChecker, manifest.refs),
       ),
       returnType: getJSValue(
         useReturnType,
         typeChecker,
         manifest.refs,
-        callable.location,
+        location,
       ),
       modelIds,
       namespace,
       filePath: {
-        sourceFile: callable.location.getSourceFile().getFilePath(),
-        outputFile: callable.location
+        sourceFile: location.getSourceFile().getFilePath(),
+        outputFile: location
           .getSourceFile()
           .getEmitOutput()
           .getOutputFiles()[0]
           .getFilePath(),
+      },
+      config: {
+        memory: config.memory,
+        timeout: config.timeout,
       },
     }
 

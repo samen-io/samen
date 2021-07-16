@@ -13,6 +13,12 @@ export interface RPCFunction {
   modelIds: string[]
   namespace: string[]
   filePath: { sourceFile: string; outputFile: string }
+  config: RPCFunctionConfig
+}
+
+export interface RPCFunctionConfig {
+  memory?: number
+  timeout?: number
 }
 
 export interface RPCFunctionParameter {
