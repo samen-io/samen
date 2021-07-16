@@ -26,7 +26,7 @@ import {
 import { RPCConfig } from "../rpc"
 
 interface RPCDeclaration {
-  rpc: FunctionDeclaration
+  rpc: Callable
   middleware: FunctionDeclaration[]
   config: RPCConfig
 }
@@ -54,12 +54,19 @@ export default function generateManifest(
   }
 }
 
-type NamespaceFunctionMap = Map<string[], RPCDeclaration[]>
+type NamespaceFunctionMap = Map<string[], Callable[]>
+
+export interface Callable {
+  name: string
+  returnType: Type<ts.Type>
+  parameters: ParameterDeclaration[]
+  location: Node<ts.Node>
+}
 
 function getFunctionsPerNamespace(
   samenSourceFile: SourceFile,
 ): NamespaceFunctionMap {
-  const result: NamespaceFunctionMap = new Map<string[], RPCDeclaration[]>()
+  const result: NamespaceFunctionMap = new Map<string[], Callable[]>()
 
   result.set([], reduceFuncs(samenSourceFile.getExportSymbols()))
 
@@ -89,47 +96,84 @@ function getFunctionsPerNamespace(
 
   return result
 
-  function reduceFuncs(symbols: Symbol[]): RPCDeclaration[] {
-    return symbols.reduce((result: RPCDeclaration[], exportSymbol: Symbol) => {
+  function reduceFuncs(symbols: Symbol[]): Callable[] {
+    return symbols.reduce((result: Callable[], exportSymbol: Symbol) => {
       const symbol = exportSymbol.isAlias()
         ? exportSymbol.getAliasedSymbolOrThrow()
         : exportSymbol
 
       const valueDeclr = symbol.getValueDeclaration()
-      console.log(valueDeclr)
 
       if (valueDeclr === undefined) {
         return result
       }
 
       if (Node.isFunctionDeclaration(valueDeclr)) {
-        console.log("------- IS FUNCTION")
-        return [...result, makeRPCDeclaration(valueDeclr)]
+        const name = valueDeclr.getName()
+        if (name === undefined) {
+          throw new Error("Function should have name")
+        }
+        return [
+          ...result,
+          {
+            name,
+            returnType: valueDeclr.getReturnType(),
+            parameters: valueDeclr.getParameters(),
+            location: valueDeclr,
+          },
+        ]
       }
       if (Node.isVariableDeclaration(valueDeclr)) {
-        console.log("------- IS VARIABLE")
-        const exportedVariable = valueDeclr
-          .getInitializer()
+        const initializer = valueDeclr.getInitializer()
+        const exportedVariable = initializer
           ?.getType()
           ?.getSymbol()
           ?.getValueDeclaration()
         if (Node.isFunctionDeclaration(exportedVariable)) {
-          return [...result, makeRPCDeclaration(exportedVariable)]
+          const name = exportedVariable.getName()
+          if (name === undefined) {
+            throw new Error("Function should have name")
+          }
+          return [
+            ...result,
+            {
+              name,
+              returnType: exportedVariable.getReturnType(),
+              parameters: exportedVariable.getParameters(),
+              location: exportedVariable,
+            },
+          ]
+        } else if (Node.isArrowFunction(exportedVariable)) {
+          return [
+            ...result,
+            {
+              name: symbol.getName(),
+              returnType: exportedVariable.getReturnType(),
+              parameters: exportedVariable.getParameters(),
+              location: exportedVariable,
+            },
+          ]
+        } else if (Node.isCallExpression(initializer)) {
+          const calledFunctionName = initializer
+            .getChildrenOfKind(ts.SyntaxKind.Identifier)?.[0]
+            ?.getText()
+          const wrappedFunc = initializer.getArguments()[0]?.getSymbol()
+
+          if (calledFunctionName === "createRPCFunction" && wrappedFunc) {
+            const actualCallable = reduceFuncs([wrappedFunc])[0]
+            // TODO: parse de config erbij!
+            return [
+              ...result,
+              {
+                ...actualCallable,
+                name: symbol.getName(),
+              },
+            ]
+          }
         }
       }
       return result
-    }, [] as RPCDeclaration[])
-
-    function makeRPCDeclaration(func: FunctionDeclaration): RPCDeclaration {
-      return {
-        rpc: func,
-        middleware: [],
-        config: {
-          memory: 1024,
-          timeout: 10 * 1000,
-        },
-      }
-    }
+    }, [] as Callable[])
   }
 }
 
@@ -137,17 +181,17 @@ function compileRPCs(
   typeChecker: TypeChecker,
   manifest: SamenManifest,
   namespace: string[],
-  functionDeclarations: RPCDeclaration[],
+  callables: Callable[],
 ) {
-  for (const { rpc: functionDeclaration } of functionDeclarations) {
-    const returnType = functionDeclaration.getReturnType()
+  for (const callable of callables) {
+    const returnType = callable.returnType
     const isReturnTypePromise = returnType.getSymbol()?.getName() === "Promise"
     const useReturnType = isReturnTypePromise
       ? returnType.getTypeArguments()[0]
       : returnType
 
     const modelIds: string[] = []
-    const newModels = extractModels(functionDeclaration, manifest.models)
+    const newModels = extractModels(callable, manifest.models)
 
     for (const model of Object.values(newModels)) {
       if (manifest.models[model.id] === undefined) {
@@ -156,7 +200,7 @@ function compileRPCs(
       modelIds.push(model.id)
     }
 
-    const name = functionDeclaration.getName()
+    const name = callable.name
 
     if (!name) {
       throw new Error("Function has no name")
@@ -164,19 +208,25 @@ function compileRPCs(
 
     const rpcFunction: RPCFunction = {
       name,
-      parameters: functionDeclaration
-        .getParameters()
-        .map((param, index) =>
-          compileParameterDeclaration(param, index, typeChecker, manifest.refs),
-        ),
+      parameters: callable.parameters.map((param, index) =>
+        compileParameterDeclaration(param, index, typeChecker, manifest.refs),
+      ),
       returnType: getJSValue(
         useReturnType,
         typeChecker,
         manifest.refs,
-        functionDeclaration,
+        callable.location,
       ),
       modelIds,
       namespace,
+      filePath: {
+        sourceFile: callable.location.getSourceFile().getFilePath(),
+        outputFile: callable.location
+          .getSourceFile()
+          .getEmitOutput()
+          .getOutputFiles()[0]
+          .getFilePath(),
+      },
     }
 
     manifest.rpcFunctions.push(rpcFunction)
@@ -423,11 +473,8 @@ function mergeUnionTypes(jsValues: JSValue[]): JSValue[] {
   return oneOfTypes
 }
 
-function extractModels(func: FunctionDeclaration, models: ModelMap): ModelMap {
-  return loop([
-    ...func.getParameters().map((p) => p.getType()),
-    func.getReturnType(),
-  ])
+function extractModels(func: Callable, models: ModelMap): ModelMap {
+  return loop([...func.parameters.map((p) => p.getType()), func.returnType])
 
   function loop(todos: Type[], done: Type[] = []): ModelMap {
     if (todos.length === 0) {

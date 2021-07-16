@@ -1,9 +1,8 @@
 import { JSType, JSValue, SamenManifest } from "../../../domain"
 
-export const promise = (value: JSValue, manifest: SamenManifest) =>
-  `Promise<${type(value, manifest)}>`
+export const promise = (value: JSValue) => `Promise<${type(value)}>`
 
-export const type = (value: JSValue, manifest: SamenManifest): string => {
+export const type = (value: JSValue): string => {
   return typeToString(value)
 
   function typeToString(value: JSValue): string {

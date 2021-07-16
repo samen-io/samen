@@ -4,10 +4,9 @@ import { type } from "./types"
 
 interface Props {
   parameters: RPCFunctionParameter[]
-  manifest: SamenManifest
 }
 
-export const typedParameters = ({ parameters, manifest }: Props): string =>
+export const typedParameters = ({ parameters }: Props): string =>
   parameters
     .map((p) => {
       if (p.value.type === JSType.oneOfTypes) {
@@ -18,13 +17,13 @@ export const typedParameters = ({ parameters, manifest }: Props): string =>
           const otherTypes = p.value.oneOfTypes.filter(
             (o, i) => i !== undefinedIndex,
           )
-          return `${p.name}?: ${type(
-            { type: JSType.oneOfTypes, oneOfTypes: otherTypes },
-            manifest,
-          )}`
+          return `${p.name}?: ${type({
+            type: JSType.oneOfTypes,
+            oneOfTypes: otherTypes,
+          })}`
         }
       }
-      return `${p.name}: ${type(p.value, manifest)}`
+      return `${p.name}: ${type(p.value)}`
     })
     .join(", ")
 

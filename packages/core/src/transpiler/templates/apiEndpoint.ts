@@ -54,7 +54,6 @@ const awsHandler = (p: Props): string => {
   const parametersFromBody = parametersFromObject({
     parameters,
     objectName: "body",
-    manifest: p.manifest,
   })
 
   return `
@@ -110,7 +109,6 @@ const gcHandler = (p: Props): string => {
   const parametersFromBody = parametersFromObject({
     parameters,
     objectName: "body",
-    manifest: p.manifest,
   })
   const hasIdTokenParam = parameters.some((p) => p.name === "idToken")
 
@@ -184,7 +182,6 @@ const serveHandler = (p: Props): string => {
   const parametersFromBody = parametersFromObject({
     parameters,
     objectName: "body",
-    manifest: p.manifest,
   })
   const hasIdTokenParam = parameters.some((p) => p.name === "idToken")
 

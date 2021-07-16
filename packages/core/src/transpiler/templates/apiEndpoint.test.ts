@@ -1,10 +1,4 @@
-import {
-  JSType,
-  ModelMap,
-  RefMap,
-  RPCFunction,
-  SamenManifest,
-} from "../../domain"
+import { JSType, RPCFunction } from "../../domain"
 import apiEndpoint, { Props } from "./apiEndpoint"
 import render from "./render"
 
@@ -14,6 +8,7 @@ const props = (partialRpcFunction: Partial<RPCFunction>): Props => {
     parameters: [],
     returnType: { type: JSType.untyped },
     modelIds: [],
+    namespace: [],
     filePath: { sourceFile: "test.ts", outputFile: "test.js" },
     ...partialRpcFunction,
   }
@@ -24,6 +19,8 @@ const props = (partialRpcFunction: Partial<RPCFunction>): Props => {
       models: {
         Something: {
           id: "Something",
+          name: "Something",
+          namespace: [],
           ts: "interface Something { x: number }",
         },
       },

@@ -109,10 +109,9 @@ const rpcFunction = (rpcFn: RPCFunction, manifest: SamenManifest): string => {
   const signature = functionSignature({
     name,
     parameters,
-    returnType: promise(returnType, manifest),
-    manifest,
+    returnType: promise(returnType),
   })
-  const body = `{${untypedParameters({ parameters, manifest })}}`
+  const body = `{${untypedParameters({ parameters })}}`
 
   const requestPath = `/${
     namespace.length ? `${namespace.join("/")}/${name}` : name
@@ -134,7 +133,6 @@ const rpcFunction = (rpcFn: RPCFunction, manifest: SamenManifest): string => {
           ? `await requestVoid("${requestPath}", ${body})`
           : `const rpcResult = await request<${type(
               returnType,
-              manifest,
             )}>("${requestPath}", ${body});
             ${dateConvertLogic ?? ""}
             return rpcResult;`
